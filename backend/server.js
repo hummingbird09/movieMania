@@ -1,55 +1,53 @@
 // backend/server.js
 
-// Load environment variables from .env file
-require('dotenv').config();
+    const express = require('express');
+    const connectDB = require('./config/db');
+    const dotenv = require('dotenv');
+    const cors = require('cors');
+    const path = require('path');
 
-const express = require('express');
-const mongoose = require('mongoose');
-const cors = require('cors');
-const movieRoutes = require('./routes/movieRoutes');
-const authRoutes = require('./routes/authRoutes');
-const showtimeRoutes = require('./routes/showtimeRoutes');
-const bookingRoutes = require('./routes/bookingRoutes'); // Import booking routes
+    // Load env vars
+    dotenv.config({ path: './config/config.env' }); // Assuming config.env in config folder
+    // If your .env is directly in backend folder:
+    dotenv.config();
 
-const app = express();
-const PORT = process.env.PORT || 5000;
-const MONGO_URI = process.env.MONGO_URI;
+    const app = express();
 
-// Middleware
-app.use(cors());
-app.use(express.json());
+    // Connect to database
+    connectDB();
 
-// Connect to MongoDB Atlas
-const connectDB = async () => {
-    try {
-        await mongoose.connect(MONGO_URI);
-        console.log('MongoDB Connected...');
-    } catch (err) {
-        console.error('MongoDB connection error:', err.message);
-        process.exit(1);
+    // TEMPORARY: Import and run seeding script ONLY ONCE for deployment
+    // REMOVE THESE LINES AFTER SUCCESSFUL DEPLOYMENT AND SEEDING
+    const seedMovies = require('./seedMovies');
+    seedMovies();
+    // END TEMPORARY BLOCK
+
+    // Init middleware
+    app.use(express.json({ extended: false }));
+    app.use(cors());
+
+    // Define Routes
+    app.use('/api/auth', require('./routes/authRoutes'));
+    app.use('/api/movies', require('./routes/movieRoutes'));
+    app.use('/api/showtimes', require('./routes/showtimeRoutes'));
+    app.use('/api/bookings', require('./routes/bookingRoutes'));
+
+    // Serve static assets in production
+    if (process.env.NODE_ENV === 'production') {
+        // Set static folder
+        app.use(express.static(path.join(__dirname, '../frontend/build')));
+
+        app.get('*', (req, res) =>
+            res.sendFile(path.resolve(__dirname, '../frontend', 'build', 'index.html'))
+        );
+    } else {
+        app.get('/', (req, res) => {
+            res.send('API is running...');
+        });
     }
-};
 
-connectDB();
 
-// Define a simple route for testing
-app.get('/', (req, res) => {
-    res.send('API is running...');
-});
+    const PORT = process.env.PORT || 5000;
 
-// Use movie routes
-app.use('/api/movies', movieRoutes);
-
-// Use authentication routes
-app.use('/api/auth', authRoutes);
-
-// Use showtime routes
-app.use('/api/showtimes', showtimeRoutes);
-
-// Use booking routes
-app.use('/api/bookings', bookingRoutes); // All requests to /api/bookings will be handled by bookingRoutes
-
-// Start the server
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-});
+    app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+    
