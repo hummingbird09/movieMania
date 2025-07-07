@@ -3,15 +3,15 @@
 const express = require('express');
 const router = express.Router();
 const Showtime = require('../models/Showtime');
-const Movie = require('../models/Movie');
-const mongoose = require('mongoose'); // This import is necessary and remains
+const Movie = require('../models/movie'); // Changed 'Movie' to 'movie' (lowercase)
+const auth = require('../middleware/authMiddleware');
 
-// @route   GET /api/showtimes
+// @route   GET api/showtimes
 // @desc    Get all showtimes
 // @access  Public
 router.get('/', async (req, res) => {
     try {
-        const showtimes = await Showtime.find().populate('movie').sort({ date: 1, time: 1 });
+        const showtimes = await Showtime.find().populate('movie', ['title', 'posterUrl', 'duration', 'genre', 'description', 'trailerUrl']);
         res.json(showtimes);
     } catch (err) {
         console.error(err.message);
@@ -19,12 +19,12 @@ router.get('/', async (req, res) => {
     }
 });
 
-// @route   GET /api/showtimes/:id
-// @desc    Get a single showtime by ID
+// @route   GET api/showtimes/:id
+// @desc    Get showtime by ID
 // @access  Public
 router.get('/:id', async (req, res) => {
     try {
-        const showtime = await Showtime.findById(req.params.id).populate('movie');
+        const showtime = await Showtime.findById(req.params.id).populate('movie', ['title', 'posterUrl', 'duration', 'genre', 'description', 'trailerUrl']);
         if (!showtime) {
             return res.status(404).json({ msg: 'Showtime not found' });
         }
@@ -38,38 +38,19 @@ router.get('/:id', async (req, res) => {
     }
 });
 
-// @route   GET /api/showtimes/movie/:movieId
-// @desc    Get all showtimes for a specific movie
-// @access  Public
-router.get('/movie/:movieId', async (req, res) => {
-    try {
-        const showtimes = await Showtime.find({ movie: req.params.movieId }).populate('movie').sort({ date: 1, time: 1 });
-        if (showtimes.length === 0) {
-            return res.status(404).json({ msg: 'No showtimes found for this movie' });
-        }
-        res.json(showtimes);
-    } catch (err) {
-        console.error(err.message);
-        if (err.kind === 'ObjectId') {
-            return res.status(400).json({ msg: 'Invalid movie ID format' });
-        }
-        res.status(500).send('Server Error');
-    }
-});
-
-
-// @route   POST /api/showtimes
-// @desc    Add a new showtime
-// @access  Private (Admin only - will add auth middleware later)
-router.post('/', async (req, res) => {
-    // Reverted: Now expects totalSeats again
+// @route   POST api/showtimes
+// @desc    Add new showtime
+// @access  Private (Admin only)
+router.post('/', auth, async (req, res) => {
     const { movie, date, time, theater, totalSeats, price } = req.body;
 
-    try {
-        if (!mongoose.Types.ObjectId.isValid(movie)) {
-            return res.status(400).json({ msg: 'Invalid Movie ID format' });
-        }
+    // Check if user is admin
+    if (req.user.role !== 'admin') {
+        return res.status(403).json({ msg: 'Access denied. Admins only.' });
+    }
 
+    try {
+        // Validate movie ID
         const existingMovie = await Movie.findById(movie);
         if (!existingMovie) {
             return res.status(404).json({ msg: 'Movie not found' });
@@ -81,94 +62,83 @@ router.post('/', async (req, res) => {
             time,
             theater,
             totalSeats,
-            availableSeats: totalSeats, // Initially, available seats are equal to total seats
+            availableSeats: totalSeats, // Initially, all seats are available
             price
         });
 
         const showtime = await newShowtime.save();
-        await showtime.populate('movie');
         res.status(201).json(showtime);
-
     } catch (err) {
         console.error(err.message);
-        if (err.code === 11000) {
-            return res.status(400).json({ msg: 'A showtime for this movie, date, time, and theater already exists.' });
-        }
-        if (err.name === 'ValidationError') {
-            return res.status(400).json({ msg: err.message });
-        }
         res.status(500).send('Server Error');
     }
 });
 
-// @route   PUT /api/showtimes/:id
-// @desc    Update an existing showtime
+// @route   PUT api/showtimes/:id
+// @desc    Update a showtime
 // @access  Private (Admin only)
-router.put('/:id', async (req, res) => {
-    // Reverted: totalSeats and availableSeats are now directly updatable
-    const { movie, date, time, theater, totalSeats, availableSeats, price } = req.body;
+router.put('/:id', auth, async (req, res) => {
+    const { movie, date, time, theater, totalSeats, price } = req.body;
+
+    // Check if user is admin
+    if (req.user.role !== 'admin') {
+        return res.status(403).json({ msg: 'Access denied. Admins only.' });
+    }
 
     const showtimeFields = {};
     if (movie) showtimeFields.movie = movie;
     if (date) showtimeFields.date = date;
     if (time) showtimeFields.time = time;
     if (theater) showtimeFields.theater = theater;
-    if (totalSeats) showtimeFields.totalSeats = totalSeats;
-    if (availableSeats !== undefined) { // Check for undefined to allow 0
-        showtimeFields.availableSeats = availableSeats;
-    } else if (totalSeats && totalSeats !== undefined) {
-        // This logic might need refinement based on how you want to handle seat updates
-        // For now, if totalSeats changes and availableSeats is not provided, we don't auto-adjust availableSeats
+    if (totalSeats) {
+        showtimeFields.totalSeats = totalSeats;
+        // When totalSeats is updated, also update availableSeats if needed
+        // This logic might need refinement based on actual booking status
+        // For simplicity, we'll assume availableSeats is reset to totalSeats on update
+        showtimeFields.availableSeats = totalSeats;
     }
     if (price) showtimeFields.price = price;
 
+
     try {
         let showtime = await Showtime.findById(req.params.id);
-        if (!showtime) {
-            return res.status(404).json({ msg: 'Showtime not found' });
-        }
 
-        if (showtimeFields.movie && showtimeFields.movie.toString() !== showtime.movie.toString()) {
-            return res.status(400).json({ msg: 'Cannot change movie for an existing showtime.' });
-        }
-
-        // If totalSeats is updated, ensure availableSeats doesn't exceed new totalSeats
-        if (showtimeFields.totalSeats && showtimeFields.totalSeats < showtime.availableSeats) {
-             return res.status(400).json({ msg: 'Total seats cannot be less than currently available seats.' });
-        }
+        if (!showtime) return res.status(404).json({ msg: 'Showtime not found' });
 
         showtime = await Showtime.findByIdAndUpdate(
             req.params.id,
             { $set: showtimeFields },
-            { new: true, runValidators: true }
-        ).populate('movie');
+            { new: true }
+        );
 
         res.json(showtime);
-
     } catch (err) {
         console.error(err.message);
         if (err.kind === 'ObjectId') {
             return res.status(404).json({ msg: 'Showtime not found' });
         }
-        if (err.name === 'ValidationError') {
-            return res.status(400).json({ msg: err.message });
-        }
-        if (err.code === 11000) {
-            return res.status(400).json({ msg: 'A showtime for this movie, date, time, and theater already exists.' });
-        }
         res.status(500).send('Server Error');
     }
 });
 
-// @route   DELETE /api/showtimes/:id
+// @route   DELETE api/showtimes/:id
 // @desc    Delete a showtime
 // @access  Private (Admin only)
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', auth, async (req, res) => {
+    // Check if user is admin
+    if (req.user.role !== 'admin') {
+        return res.status(403).json({ msg: 'Access denied. Admins only.' });
+    }
+
     try {
-        const showtime = await Showtime.findByIdAndDelete(req.params.id);
+        const showtime = await Showtime.findById(req.params.id);
+
         if (!showtime) {
             return res.status(404).json({ msg: 'Showtime not found' });
         }
+
+        await Showtime.findByIdAndDelete(req.params.id); // Use findByIdAndDelete
+
         res.json({ msg: 'Showtime removed' });
     } catch (err) {
         console.error(err.message);
@@ -178,5 +148,6 @@ router.delete('/:id', async (req, res) => {
         res.status(500).send('Server Error');
     }
 });
+
 
 module.exports = router;
